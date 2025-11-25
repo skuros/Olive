@@ -39,7 +39,10 @@ class ModelConfig(NestedConfig):
 
     def create_model(self):
         cls = get_model_handler(self.type)
-        return cls(**self.config)
+        cfg = dict(self.config)
+        # remove hook-only fields that model handlers do not expect
+        cfg.pop("prepare_model", None)
+        return cls(**cfg)
 
     def get_model_id(self):
         for v in self.config.values():

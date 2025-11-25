@@ -10,6 +10,7 @@ from olive.hardware.accelerator import AcceleratorSpec, Device
 from olive.model import ModelConfig
 from olive.systems.common import AcceleratorConfig, SystemType
 from olive.systems.olive_system import OliveSystem
+from olive.user_script import user_script
 
 if TYPE_CHECKING:
     from olive.evaluator.metric_result import MetricResult
@@ -41,6 +42,7 @@ class LocalSystem(OliveSystem):
         output_model_path: str,
     ) -> ModelConfig:
         """Run the pass on the model."""
+        self._maybe_prepare_model(model_config)
         model = model_config.create_model()
         output_model = the_pass.run(model, output_model_path)
         return ModelConfig.from_json(output_model.to_json())
@@ -55,6 +57,7 @@ class LocalSystem(OliveSystem):
         device = accelerator.accelerator_type if accelerator else Device.CPU
         execution_providers = accelerator.execution_provider if accelerator else None
 
+        self._maybe_prepare_model(model_config)
         model = model_config.create_model()
         evaluator: OliveEvaluator = evaluator_config.create_evaluator(model)
         return evaluator.evaluate(
@@ -64,3 +67,19 @@ class LocalSystem(OliveSystem):
     def get_supported_execution_providers(self) -> list[str]:
         """Get the available execution providers."""
         return get_ort_available_providers()
+
+    @user_script()
+    def _maybe_prepare_model(self, model_config: ModelConfig) -> None:
+        """Optionally run input_model.prepare_model hook before model creation."""
+        prepare = model_config.config.get("prepare_model") if hasattr(model_config, "config") else None
+        if not prepare:
+            return
+
+        fn = prepare.get("fn")
+        if not fn:
+            raise ValueError("input_model.prepare_model requires 'fn' field.")
+
+        kwargs = prepare.get("kwargs", {})
+
+        # Dispatch to the function defined in the recipe's user_script module
+        self.call_user_script_function(fn, **kwargs)

@@ -4,13 +4,16 @@
 # --------------------------------------------------------------------------
 from typing import TYPE_CHECKING, Any, Union
 
+import importlib.util
+import logging
+from pathlib import Path
+
 from olive.common.config_utils import validate_config
 from olive.common.ort_inference import get_ort_available_providers, maybe_register_ep_libraries
 from olive.hardware.accelerator import AcceleratorSpec, Device
 from olive.model import ModelConfig
 from olive.systems.common import AcceleratorConfig, SystemType
 from olive.systems.olive_system import OliveSystem
-from olive.user_script import user_script
 
 if TYPE_CHECKING:
     from olive.evaluator.metric_result import MetricResult
@@ -56,7 +59,6 @@ class LocalSystem(OliveSystem):
 
         device = accelerator.accelerator_type if accelerator else Device.CPU
         execution_providers = accelerator.execution_provider if accelerator else None
-
         self._maybe_prepare_model(model_config)
         model = model_config.create_model()
         evaluator: OliveEvaluator = evaluator_config.create_evaluator(model)
@@ -68,18 +70,59 @@ class LocalSystem(OliveSystem):
         """Get the available execution providers."""
         return get_ort_available_providers()
 
-    @user_script()
     def _maybe_prepare_model(self, model_config: ModelConfig) -> None:
-        """Optionally run input_model.prepare_model hook before model creation."""
-        prepare = model_config.config.get("prepare_model") if hasattr(model_config, "config") else None
+        """Optionally run input_model.prepare_model hook before model creation.
+
+        Expected structure in the model config:
+
+            "input_model": {
+                "type": "OnnxModel",
+                "model_path": "model/sam2_encoder.onnx",
+                "prepare_model": {
+                    "user_script": "sam2_1_hiera_small.py",
+                    "fn": "export_sam2_to_onnx",
+                    "kwargs": {
+                        "model_id": "facebook/sam2.1-hiera-small",
+                        "onnx_path": "model/sam2_encoder.onnx",
+                        "opset": 17
+                    }
+                }
+            }
+
+        When present, this hook will import the specified user_script, locate the
+        named function, and invoke it with the given kwargs before the model
+        handler is constructed, so that artifacts such as ONNX files can be
+        materialized lazily.
+        """
+
+        logger = logging.getLogger(__name__)
+
+        prepare = getattr(model_config, "config", {}).get("prepare_model")
         if not prepare:
             return
 
-        fn = prepare.get("fn")
-        if not fn:
-            raise ValueError("input_model.prepare_model requires 'fn' field.")
+        script_name = prepare.get("user_script")
+        fn_name = prepare.get("fn")
+        kwargs = prepare.get("kwargs") or {}
 
-        kwargs = prepare.get("kwargs", {})
+        if not script_name or not fn_name:
+            raise ValueError("input_model.prepare_model requires 'user_script' and 'fn' fields.")
 
-        # Dispatch to the function defined in the recipe's user_script module
-        self.call_user_script_function(fn, **kwargs)
+        script_path = Path(script_name)
+        if not script_path.is_file():
+            script_path = Path.cwd() / script_name
+        if not script_path.is_file():
+            raise FileNotFoundError(f"prepare_model.user_script '{script_name}' not found at {script_path}")
+
+        logger.info("Running input_model.prepare_model: %s:%s", script_path, fn_name)
+
+        spec = importlib.util.spec_from_file_location(script_path.stem, script_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        fn = getattr(module, fn_name, None)
+        if fn is None or not callable(fn):
+            raise ValueError(f"Function '{fn_name}' not found or not callable in '{script_name}'.")
+
+        fn(**kwargs)

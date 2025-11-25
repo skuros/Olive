@@ -44,6 +44,7 @@ class LocalSystem(OliveSystem):
 
     def _maybe_prepare_model(self, model_config: ModelConfig) -> None:
         """Optionally run a user-provided prepare_model hook before creating the model."""
+        logger.info("prepare_model hook: %s", model_config.config.get("prepare_model"))
         cfg = model_config.config or {}
         prepare = cfg.get("prepare_model")
         if not prepare:
@@ -88,6 +89,7 @@ class LocalSystem(OliveSystem):
         output_model_path: str,
     ) -> ModelConfig:
         """Run the pass on the model."""
+        logger.info("LocalSystem.run_pass called; model_config=%s", model_config.config)
         self._maybe_prepare_model(model_config)
         model = model_config.create_model()
         output_model = the_pass.run(model, output_model_path)

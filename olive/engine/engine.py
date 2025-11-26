@@ -366,7 +366,7 @@ class Engine:
         self._compute_no_search_pass_configs(accelerator_spec)
 
         # Run prepare_model hook once before any passes
-        self._maybe_prepare_model_from_package(self.package_config)
+        self._maybe_prepare_model_from_package(self.olive_config.config_dict())
 
         # run all the passes in the pass flow
         pass_flow = list(self.computed_passes_configs.keys())

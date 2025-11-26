@@ -308,6 +308,50 @@ class Engine:
             pass_config.config = pass_cls.generate_config(accelerator_spec, pass_config.config, {}, True)
             self.computed_passes_configs[name] = pass_config
 
+    def _maybe_prepare_model_from_package(self, package_config: dict) -> None:
+        """Run a user-provided prepare_model hook from the raw package config, if present."""
+        input_model_cfg = (package_config or {}).get("input_model") or {}
+        prepare = input_model_cfg.get("prepare_model")
+        if not prepare:
+            return
+
+        user_script = prepare.get("user_script")
+        fn_name = prepare.get("fn")
+        kwargs = prepare.get("kwargs", {}) or {}
+
+        if not user_script or not fn_name:
+            logger.warning("prepare_model is missing 'user_script' or 'fn'; skipping.")
+            return
+
+        script_path = Path(user_script)
+        if not script_path.is_file():
+            script_path = Path.cwd() / user_script
+
+        if not script_path.is_file():
+            logger.error("prepare_model user_script '%s' not found; skipping.", user_script)
+            return
+
+        spec = importlib.util.spec_from_file_location(script_path.stem, script_path)
+        if spec is None or spec.loader is None:
+            logger.error("Could not load prepare_model script '%s'; skipping.", script_path)
+            return
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # type: ignore[call-arg]
+
+        fn = getattr(module, fn_name, None)
+        if fn is None:
+            logger.error("prepare_model function '%s' not found in '%s'; skipping.", fn_name, script_path)
+            return
+
+        logger.info(
+            "Running prepare_model function '%s' from '%s' with kwargs=%s",
+            fn_name,
+            script_path,
+            kwargs,
+        )
+        fn(**kwargs)
+
     def _run_no_search(
         self,
         input_model_config: ModelConfig,
@@ -318,8 +362,11 @@ class Engine:
         """Run all the registered Olive pass flows in no-search mode."""
         self._get_search_space_objectives(input_model_config, input_model_id, accelerator_spec)
 
-        # Compute pas configs
+        # Compute pass configs
         self._compute_no_search_pass_configs(accelerator_spec)
+
+        # Run prepare_model hook once before any passes
+        self._maybe_prepare_model_from_package(self.package_config)
 
         # run all the passes in the pass flow
         pass_flow = list(self.computed_passes_configs.keys())

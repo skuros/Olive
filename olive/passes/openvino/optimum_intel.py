@@ -72,9 +72,9 @@ def infer_task(
     library_name: Optional[str] = None,
 ):
     try:
-        from optimum.exporters import TasksManager
-    except Exception as e:
-        raise ImportError("Unable to import optimum packages:", e) from None
+        from optimum.exporters.tasks import TasksManager  # Optimum ≥ 2.0.0
+    except ImportError:
+        from optimum.exporters import TasksManager  # Optimum ≤ 1.x
 
     try:
         from requests.exceptions import ConnectionError as RequestsConnectionError
